@@ -1,16 +1,10 @@
 ﻿using System.Net.Sockets;
 using System.Net;
 using System.Text;
+using SharpLiteUDP.Extensions;
 
 namespace SharpLiteUDP
 {
-    class ConnectionInfo
-    {
-        public DateTime LastMessageTime { get; set; } = DateTime.UtcNow;
-    }
-
-    record struct PacketInfo(IPEndPoint EndPoint, uint SequenceNumber);
-
     public class UdpPeer : IDisposable, IAsyncDisposable
     {
         public record class Request(UdpPeer udpPeer, IPEndPoint EndPoint, string ConnectionKey)
@@ -99,7 +93,7 @@ namespace SharpLiteUDP
 
         public Task<bool> Connect(IPEndPoint endPoint, string connectionKey)
         {
-            if (hostEndPoint != null) throw new Exception("Connection is already established. Call Disconnect first.");
+            if (hostEndPoint != null) throw new NotSupportedException("Connection is already established. Call Disconnect first.");
             hostEndPoint = endPoint;
 
             var buffer = Encoding.UTF8.GetBytes(connectionKey);
@@ -347,105 +341,5 @@ namespace SharpLiteUDP
             await StopAsync();
             _client.Close();
         }
-
-        private enum UdpHeader
-        {
-            Reliable,
-            Unreliable,
-            Ping,
-            ConnectRequest,
-            ConnectionAccept,
-            Disconnection,
-            Acknowledgment
-        }
-    }
-}
-
-public static class ArrayExtensions
-{
-    public static byte[] CombineArrays(params byte[][] arrays)
-    {
-        int totalLength = arrays.Sum(arr => arr.Length);
-        var newArray = new byte[totalLength];
-
-        int offset = 0;
-        foreach (byte[] arr in arrays)
-        {
-            Buffer.BlockCopy(arr, 0, newArray, offset, arr.Length);
-            offset += arr.Length;
-        }
-
-        return newArray;
-    }
-    public static byte[] Slice(this byte[] originalArr, int startInd, int endInd)
-    {
-        int len = endInd - startInd;
-        var newArr = new byte[len];
-
-        Buffer.BlockCopy(originalArr, startInd, newArr, 0, len);
-        return newArr;
-    }
-}
-
-public static class WaitExtensions
-{
-    /// <summary>
-    /// Wraps a <see cref="WaitHandle"/> with a <see cref="Task{Boolean}"/>. If the <see cref="WaitHandle"/> is signalled, the returned task is (successfully) completed. If the observation is cancelled, the returned task is cancelled. If the handle is already signalled or the cancellation token is already cancelled, this method acts synchronously.
-    /// </summary>
-    /// <param name="handle">The <see cref="WaitHandle"/> to observe.</param>
-    /// <param name="token">The cancellation token that cancels observing the <see cref="WaitHandle"/>.</param>
-    public static Task WaitOneAsync(this WaitHandle handle, CancellationToken token)
-    {
-        return WaitOneAsync(handle, Timeout.InfiniteTimeSpan, token);
-    }
-
-    public static Task<bool> WaitOneAsync(this WaitHandle handle, int timeout, CancellationToken token)
-    {
-        return WaitOneAsync(handle, TimeSpan.FromMilliseconds(timeout), token);
-    }
-
-    /// <summary>
-    /// Wraps a <see cref="WaitHandle"/> with a <see cref="Task{Boolean}"/>. If the <see cref="WaitHandle"/> is signalled, the returned task is completed with a <c>true</c> result. If the observation times out, the returned task is completed with a <c>false</c> result. If the observation is cancelled, the returned task is cancelled. If the handle is already signalled, the timeout is zero, or the cancellation token is already cancelled, then this method acts synchronously.
-    /// </summary>
-    /// <param name="handle">The <see cref="WaitHandle"/> to observe.</param>
-    /// <param name="timeout">The timeout after which the <see cref="WaitHandle"/> is no longer observed.</param>
-    /// <param name="token">The cancellation token that cancels observing the <see cref="WaitHandle"/>.</param>
-    public static Task<bool> WaitOneAsync(this WaitHandle handle, TimeSpan timeout, CancellationToken token)
-    {
-        _ = handle ?? throw new ArgumentNullException(nameof(handle));
-
-        // Handle synchronous cases.
-        var alreadySignaled = handle.WaitOne(0);
-        if (alreadySignaled)
-            return Task.FromResult(true);
-        if (timeout == TimeSpan.Zero)
-            return Task.FromResult(false);
-        if (token.IsCancellationRequested)
-            return Task.FromCanceled<bool>(token);
-
-        // Register all asynchronous cases.
-        return DoFromWaitHandle(handle, timeout, token);
-    }
-
-    private static async Task<bool> DoFromWaitHandle(WaitHandle handle, TimeSpan timeout, CancellationToken token)
-    {
-        var tcs = new TaskCompletionSource<bool>();
-        using (new ThreadPoolRegistration(handle, timeout, tcs))
-        using (token.Register(state => ((TaskCompletionSource<bool>)state).TrySetCanceled(), tcs, useSynchronizationContext: false))
-            return await tcs.Task.ConfigureAwait(false);
-    }
-
-    private sealed class ThreadPoolRegistration : IDisposable
-    {
-        private readonly RegisteredWaitHandle _registeredWaitHandle;
-
-        public ThreadPoolRegistration(WaitHandle handle, TimeSpan timeout, TaskCompletionSource<bool> tcs)
-        {
-            _registeredWaitHandle = ThreadPool.RegisterWaitForSingleObject(handle,
-                (state, timedOut) => ((TaskCompletionSource<bool>)state).TrySetResult(!timedOut), tcs,
-                timeout, executeOnlyOnce: true);
-        }
-
-        void IDisposable.Dispose() => _registeredWaitHandle.Unregister(null);
     }
 }
