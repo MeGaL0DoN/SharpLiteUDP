@@ -1,5 +1,10 @@
 ﻿namespace SharpLiteUDP
 {
+    public enum UDPDeliveryMethod
+    {
+        Reliable,
+        Unreliable,
+    }
     enum UdpHeader
     {
         Reliable,

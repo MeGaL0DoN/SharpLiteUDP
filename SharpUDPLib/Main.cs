@@ -1,21 +1,19 @@
 ﻿using System.Net.Sockets;
 using System.Net;
-using System.Text;
 using SharpLiteUDP.Extensions;
 
 namespace SharpLiteUDP
 {
+    public record DataReceiveArgs(byte[] Buffer, IPEndPoint SenderEndPoint, UDPDeliveryMethod DeliveryMethod);
+    public record ConnectionArgs(IPEndPoint ConnectionEndPoint, byte[] ConnectionMessage);
+
     public class UdpPeer : IDisposable, IAsyncDisposable
     {
-        public record class Request(UdpPeer udpPeer, IPEndPoint EndPoint, string ConnectionKey)
+        public record class Request(UdpPeer udpPeer, IPEndPoint EndPoint, byte[] ConnectionKey)
         {
-            public void Accept() => _ = udpPeer.AcceptConnection(this);
+            public void Accept(byte[] acceptanceMessage) => _ = udpPeer.AcceptConnection(this, acceptanceMessage);
+            public void Accept() => _ = udpPeer.AcceptConnection(this, Array.Empty<byte>());
         }
-
-        public delegate void NetDisconnect(IPEndPoint endPoint);
-        public delegate void NetData(byte[] buffer, IPEndPoint sender, bool isReliable);
-        public delegate void NetConnectionRequest(Request request);
-        public delegate void NetConnect(IPEndPoint endPoint, string? connectionKey);
 
         private readonly UdpClient _client;
         private CancellationTokenSource cancellationTokenSource = new();
@@ -31,10 +29,10 @@ namespace SharpLiteUDP
         public int DisconnectionTimeOut { get; init; } = 2000;
         public IReadOnlyCollection<IPEndPoint> Connections => ConnectionInfos.Keys;
 
-        public event NetDisconnect? OnDisconnect;
-        public event NetData? OnDataReceive;
-        public event NetConnectionRequest? OnConnectionRequest;
-        public event NetConnect? OnConnected;
+        public event Action<IPEndPoint>? OnDisconnect;
+        public event Action<DataReceiveArgs>? OnDataReceive;
+        public event Action<Request>? OnConnectionRequest;
+        public event Action<ConnectionArgs>? OnConnected;
 
         private const int SIO_UDP_CONNRESET = -1744830452;
         private void disableUDPException()
@@ -91,14 +89,13 @@ namespace SharpLiteUDP
         }
         public void Stop() => Task.Run(StopAsync).GetAwaiter().GetResult();
 
-        public Task<bool> Connect(IPEndPoint endPoint, string connectionKey)
+        public Task<bool> Connect(IPEndPoint endPoint, byte[] connectionKey)
         {
             if (hostEndPoint != null) throw new NotSupportedException("Connection is already established. Call Disconnect first.");
             hostEndPoint = endPoint;
-
-            var buffer = Encoding.UTF8.GetBytes(connectionKey);
-            return SendReliableAsync(buffer, hostEndPoint, UdpHeader.ConnectRequest);
+            return SendReliableAsync(connectionKey, hostEndPoint, UdpHeader.ConnectRequest);
         }
+        public Task<bool> Connect(IPEndPoint endPoint) => Connect(endPoint, Array.Empty<byte>());
 
         // returns true if packet received first time
         private bool ProcessReliablePacket(byte[] buffer, IPEndPoint endPoint)
@@ -138,13 +135,13 @@ namespace SharpLiteUDP
             }
         }
 
-        private async Task AcceptConnection(Request request)
+        private async Task AcceptConnection(Request request, byte[] acceptanceMessage)
         {
-            var result = await SendReliableAsync(Array.Empty<byte>(), request.EndPoint, UdpHeader.ConnectionAccept);
+            var result = await SendReliableAsync(acceptanceMessage, request.EndPoint, UdpHeader.ConnectionAccept);
             if (result)
             {
                 ConnectionInfos.Add(request.EndPoint, new ConnectionInfo());
-                OnConnected?.Invoke(request.EndPoint, request.ConnectionKey);
+                OnConnected?.Invoke(new ConnectionArgs(request.EndPoint, request.ConnectionKey));
             }
         }
 
@@ -186,7 +183,7 @@ namespace SharpLiteUDP
                         {
                             if (ProcessReliablePacket(data, msg.RemoteEndPoint))
                             {
-                                var request = new Request(this, msg.RemoteEndPoint, Encoding.UTF8.GetString(data));
+                                var request = new Request(this, msg.RemoteEndPoint, data);
                                 OnConnectionRequest?.Invoke(request);
                             }
                             continue;
@@ -196,7 +193,7 @@ namespace SharpLiteUDP
                             if (ProcessReliablePacket(data, msg.RemoteEndPoint))
                             {
                                 ConnectionInfos.Add(msg.RemoteEndPoint, new ConnectionInfo());
-                                OnConnected?.Invoke(msg.RemoteEndPoint, null);
+                                OnConnected?.Invoke(new ConnectionArgs(msg.RemoteEndPoint, data.Slice(sizeof(uint), data.Length)));
                             }
                             continue;
                         }
@@ -215,7 +212,7 @@ namespace SharpLiteUDP
                                 {
                                     case UdpHeader.Unreliable:
                                         {
-                                            OnDataReceive?.Invoke(data, msg.RemoteEndPoint, false);
+                                            OnDataReceive?.Invoke(new DataReceiveArgs(data, msg.RemoteEndPoint, UDPDeliveryMethod.Unreliable));
                                             break;
                                         }
                                     case UdpHeader.Disconnection:
@@ -226,7 +223,7 @@ namespace SharpLiteUDP
                                     case UdpHeader.Reliable:
                                         {
                                             if (ProcessReliablePacket(data, msg.RemoteEndPoint))
-                                                OnDataReceive?.Invoke(data.Slice(sizeof(uint), data.Length), msg.RemoteEndPoint, true);
+                                                OnDataReceive?.Invoke(new DataReceiveArgs(data.Slice(sizeof(uint), data.Length), msg.RemoteEndPoint, UDPDeliveryMethod.Unreliable));
                                             break;
                                         }
                                 }
